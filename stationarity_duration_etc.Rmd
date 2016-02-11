@@ -1,0 +1,401 @@
+---
+title: "time series fundamentals"
+author: "michael downs"
+date: "Oct 13, 2015"
+output: html_document
+---
+
+```{r eval=TRUE,cache=TRUE,echo=FALSE,message=FALSE,results='hide',warning=FALSE,fig.show='asis',fig.height=4,fig.width=6}
+library(xts)
+library(urca)
+library(quantmod)
+library(fUnitRoots)
+library(PerformanceAnalytics)
+library(highfrequency)
+
+#library(timeSeries)
+#library(timeDate)
+#library(lubridate)
+#library(tseries)
+
+#library(TTR)
+#library(caret)
+#library(mondate)
+#library(MTS)
+#library(car)
+
+```
+
+## problem 7.5
+
+### (a) Plot the transaction durations vs. the times they occur on June 2, 2003.
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+
+# retrieve ddata
+address.head="http://www.stanford.edu/~xing/statfinbook/_BookData/"
+address.tail="Chap07/ibm_intratrade_20030602.txt"
+address=paste(address.head,address.tail,sep="")
+data=read.table(address,head=T)
+
+# format time field
+trd.tm=strptime(as.character(data[,1]),format="%H:%M:%S")
+trd.dur=diff(trd.tm)
+
+trd.dat=as.xts(data[,2:3],trd.tm)
+trd.dat=trd.dat[-1]
+trd.dat$TradeDur=trd.dur
+
+# plot results
+par(mfrow=c(1,1))
+plot(trd.dat$TradeDur,type="l",
+     main="duration over time",
+     xlab="time increments",
+     ylab="duration in seconds")
+
+```
+
+
+### (b) Estimate expected duration as a function of time using kernel smoothing with Epanechnikov and GCV to select bandwidth. Plot the estimated curve.
+
+The code below finds the optimal bandwidth using np.gcv(). It uses the resulting bandwidth value to calculate the smoothed line result.
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=5,fig.width=7}
+
+library(PLRModels)
+
+# generalized cross validation to find bandwidth
+opt.bw=np.gcv(cbind(trd.dur,as.numeric(trd.tm[-1])),
+       h.seq=NULL, 
+       num.h = 50, 
+       estimator = "NW", 
+       kernel = "Epanechnikov")
+
+# using bandwidth to estimate expected duration
+trd.dat$TradeSmooth=ksmooth(as.numeric(trd.tm[-1]),
+                   trd.dur,
+                   kernel = c("normal"), 
+                   bandwidth = opt.bw$h.opt,
+                   range.x = range(as.numeric(trd.tm[-1])),
+                   n.points = max(100L,length(as.numeric(trd.tm[-1]))))$y
+
+print(paste("cross-validated duration bandwidth: ",opt.bw$h.opt))
+```
+
+The left graph below shows smoothed (expected) trade durations throughout the day. The right graph shows the smoothed line superimposed over a line graph of actual durations. 
+
+```{r eval=TRUE,cache=TRUE,echo=FALSE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+# plot results
+par(mfrow=c(1,2))
+plot(trd.dat$TradeSmooth,
+     main=paste("trade smooth bw=",opt.bw$h.opt),
+     ylab="smoothed duration")
+
+plot(trd.dat$TradeDur,type="l",
+     main="durations: actual (blk), smoothed (red)",
+     ylab="trade duration")
+lines(trd.dat$TradeSmooth,col="red")
+      
+```
+
+### c. Plot the residuals
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+
+trd.dat$TradeResid=trd.dat$TradeDur-trd.dat$TradeSmooth
+
+plot(trd.dat$TradeResid)
+
+```
+
+### d. Estimate the density function of IBM transaction durations. Plot the histogram of the durations and the estimated density function.
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+
+
+par(mfrow=c(1,2))
+hist(trd.dat$TradeDur,main="trade duration histogram",xlab="duration",ylab="frequency")
+
+# use density to select bandwith.
+tmp=density(trd.dat$TradeDur, bw = opt.bw$h.opt, adjust = 1,
+        kernel ="epanechnikov",
+        weights = NULL,
+        window = kernel, width,
+        give.Rkern = FALSE,
+        n = 512, cut = 3, na.rm = FALSE)
+
+plot(tmp,main="trade duration density")
+
+```
+
+## Problem 7.6
+
+### (a) Fit a MARS model to the first 6-months. Record estimated f. Plot it.
+
+The code below joins the sp500f and sp500fopt tables on Trade.Date and Delivery.Month, creates the training data set and fits the mars model.
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=5,fig.width=7}
+
+library(lattice)
+library(earth)
+library(reshape2)
+
+address.tail <- "Chap07/d_sp500f_1987.txt"
+address <- paste(address.head,address.tail,sep="")
+sp500f <- read.table(address,head=T)
+     
+address.tail <- "Chap07/d_sp500fopt_1987.txt"
+address <- paste(address.head,address.tail,sep="")
+sp500fopt <- read.table(address,head=T)
+
+# futures record unique to Trade.Date and Delivery.Month
+head(sp500f[sp500f$Trade.Date==870109,],1)
+
+# option record unique to Delivery.Month/Days.to.Exp, Strike.Price
+head(sp500fopt[sp500fopt$Trade.Date==870109,],1)
+
+# create train dataset
+sp500f.trn=sp500f[sp500f$Trade.Date<870631,c(2,3,4)]
+colnames(sp500f.trn)=c("fTrdDt","fDMnth","fStlP")
+sp500fcall.trn=sp500fopt[sp500fopt$Trade.Date<870631 & sp500fopt$Type=="C",c(2,3,4,5,6)]
+colnames(sp500fcall.trn)=c("oTrdDt","oDMnth","oDtoE","oStkP","oStlP")
+
+# merge tables on Trade.Date, Delivery.Month
+sp500.trn.mrg=merge(sp500f.trn,sp500fcall.trn,by.x=c("fTrdDt","fDMnth"),by.y=c("oTrdDt","oDMnth"),all=F)
+sp500.trn.mrg$SdivK=sp500.trn.mrg$fStlP/sp500.trn.mrg$oStkP
+
+# fit mars interaction model
+mars.fit=earth(oStlP~.,data=sp500.trn.mrg[,c("oStlP","oDtoE","SdivK")],trace=0,degree=2)
+```
+
+I fit the mars function using degree=2. This setting moves beyond a purely additive model to include basic (1st order) interactions between the two (Days.to.Expiry and "moneyness" (S/K)) variables. The resulting estimation function and summary statistics are below. Like Hutchison, Lo and Poggio (1994), I find that S/K yields high R-squared suggesting the need for another measure of fit such as hedging error.
+```{r eval=TRUE,cache=TRUE,echo=FALSE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+summary(mars.fit,digits=2,style="pmax")
+```
+
+I include the following summary graphics just to note the presence of outlier observations. Hat values for these observations suggest the need for further investigation. 
+```{r eval=TRUE,cache=TRUE,echo=FALSE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+plot(mars.fit)
+```
+
+Finally, the model plots below show the relationship between y and the two predictors including a three dimensional surface plot. A separate model replacing Days.to.Expiration with Delivery.Month exhibited a slightly more interesting step for the first graphic, but not improved results. 
+
+```{r eval=TRUE,cache=TRUE,echo=FALSE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+plotmo(mars.fit,xlab="S_t / K",ylab="days to expiry")
+```
+
+### (b) Use fit to estimate prices for the next 6-months. Plot the residuals.
+
+The code below creates the test data set, then uses the prior fit to make predictions for the roughly 5,000 post-June '87 call option settlement prices.
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=5,fig.width=7}
+
+# create test dataset
+sp500f.tst=sp500f[sp500f$Trade.Date>=870631,c(2,3,4)]
+colnames(sp500f.tst)=c("fTrdDt","fDMnth","fStlP")
+sp500fcall.tst=sp500fopt[sp500fopt$Trade.Date>=870631 & sp500fopt$Type=="C",c(2,3,4,5,6)]
+colnames(sp500fcall.tst)=c("oTrdDt","oDMnth","oDtoE","oStkP","oStlP")
+
+sp500.tst.mrg=merge(sp500f.tst,sp500fcall.tst,by.x=c("fTrdDt","fDMnth"),by.y=c("oTrdDt","oDMnth"),all=F)
+sp500.tst.mrg$SdivK=sp500.tst.mrg$fStlP/sp500.tst.mrg$oStkP
+
+# make predictions
+f.hat=predict(mars.fit,sp500.tst.mrg)
+```
+
+The first plot below shows the estimate residuals. Note the significant pick up in volatility, missed estimates and, therefore, residuals half way thru the series. The bottom plot shows the price action during that time with the "Black Monday" dislocation (19 Oct 1987) highlighted. 
+```{r eval=TRUE,cache=TRUE,echo=FALSE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=5,fig.width=7}
+# plot residuals
+par(mfrow=c(2,1))
+plot(sp500.tst.mrg$oStlP-f.hat,type="l",main="prediction residuals",ylab="residuals",xlab="future options * trading days")
+plot(sp500.tst.mrg$fStlP,type="l",main="s&p future price series",ylab="s&p future settlement price",xlab="future options * trading days")
+abline(v=2622,col="red",lwd=2)
+
+```
+
+## problem 9.5
+
+### (a) Perform the augmented Dickey-Fuller unit-root test for each rate.
+
+I'll use the code below iteratively, showing it this first time only. The adfTest() type "ct" suggests that the COFI series is root nonstationary failing to reject H0 with a > 0.19 p-value   
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=5,fig.width=7}
+library(urca)
+library(tseries)
+address.tail <- "Chap09/m_cofi_4rates.txt"
+address <- paste(address.head,address.tail,sep="")
+series <- read.table(address,head=T)
+rates=ts(series,freq=12,start=c(1989,9))
+
+# adf test result
+adfTest(rates[,1],lags=10,title=names(rates)[1],type="ct")
+
+```
+ 
+Price series plot shows a clear trend. Partial auto-correlation values suggests the lag=1 parameter is the problem.
+```{r eval=TRUE,cache=TRUE,echo=FALSE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+
+par(mfrow=c(1,2))
+plot(rates[,1],type="l",main=paste(names(rates)[1],"price series"))
+pacf(rates[,1],main=paste(names(rates)[1],"partial auto regresson"))
+
+```
+
+Diff'ing the price series corrects the problem in root stationarity for trend or intercept. adfTest(type="ct") rejects H0. 
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=5,fig.width=7}
+# diff'ing corrects
+cat("type=ct diff() p-value:",adfTest(diff(rates[,1]),lags=10,title=names(rates)[1],type="ct")@test$p.value,"\n")
+
+```
+
+Like COFI, the 1-year constant maturity treasury rates fail the Augmented Dickey-Fuller test for root stationarity. Diff'ing the price results in a weakly stationary (adf p-value 0.01 rejecting H0 of nonstationarity).
+
+```{r eval=TRUE,cache=TRUE,echo=FALSE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+# X1ycmt
+adf.test(rates[,2],alternative="stationary")
+
+par(mfrow=c(1,3))
+plot(rates[,2],type="l",main=paste(names(rates)[2],"price series"))
+pacf(rates[,2],main=paste(names(rates)[2],"partial auto regresson"))
+pacf(diff(rates[,2]),main=paste0("diff(",names(rates)[1],") partial auto regresson"))
+
+adf.test(diff(rates[,2]),alternative="stationary")
+
+```
+
+The raw High 5-year cmt price series (1st p-value below) is easily corrected by diffing the series resulting in a weakly stationary series (2nd p-value below).
+```{r eval=TRUE,cache=TRUE,echo=FALSE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=5,fig.width=7}
+# X5ycmt
+cat("price series p-value:",adf.test(rates[,3],alternative="stationary")$p.value,"\n")
+cat("diff(price) series p-value:",adf.test(diff(rates[,3]),alternative="stationary")$p.value,"\n")
+
+```
+
+The prime rate series is also nonstationary. However, in this case, diff'ing and even log(diff())'ing do not result in a weakly stationary series failing Augmented Dickey-Fuller tests (output below). Comparing partial auto regression plots for the price and the diff(price) series suggests lag=2 may be the problem. 
+
+```{r eval=TRUE,cache=TRUE,echo=FALSE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+# primeRate
+
+cat("primeRate price series p-value:",adf.test(rates[,4],alternative="stationary")$p.value,"\n")
+cat("primeRate diff(price) series p-value:",adf.test(diff(rates[,4]),alternative="stationary")$p.value,"\n")
+cat("primeRate diff(log(price)) series p-value:",adf.test(diff(log(rates[,4])),alternative="stationary")$p.value,"\n")
+
+par(mfrow=c(1,2))
+pacf(rates[,4],main=paste(names(rates)[4],"price series pacf"))
+pacf(diff(rates[,4]),main=paste(names(rates)[4],"diff(price) pacf"))
+```
+
+Finally, The adfTest() results for the 3-month Treasury Bill price series and diff(price) series below fail to rejct H0.
+```{r eval=TRUE,cache=TRUE,echo=FALSE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=5,fig.width=7}
+# X3mTBill.2mkt
+
+cat("3-mo Tbill price series p-value:",adf.test(rates[,5],alternative="stationary")$p.value,"\n")
+cat("3-mo Tbill diff(price) p-value:",adf.test(diff(rates[,5]),alternative="stationary")$p.value,"\n")
+
+```
+
+I use KPSS to validate the close ADF result above and find that diff'ing the price series results in a stationary long trend and a marginally stationary short trend. The results below compare the long and short trend kpss statistics with their critical values. 
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=5,fig.width=7}
+
+# settings: "tau" for constant with linear trend, "long" for long trend
+tmp=ur.kpss(as.numeric(diff(rates[,5])),lags="long",type="tau") 
+tmp@teststat;tmp@cval[2]
+
+# settings: "short" for short trend stationary
+tmp=ur.kpss(as.numeric(diff(rates[,5])),lags="short",type="tau")
+tmp@teststat;tmp@cval[2]
+
+```
+
+### (b) Assuming VAR(2) for the multivariate time series of these five rates, perform Johansen’s test for the number of cointegration vectors.
+
+As the output below shows, there are three conitegration vectors using a 1 percent critical value threshold. There are four cointegration vetors assuming a 5% critical value threshold. As we will see in part c, this threshold turns out to be important as we will find only three cointegration vectors survive the Augmented Dickey-Fuller test.
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=5,fig.width=7}
+
+rates.co=ca.jo(rates,type="eigen",ecdet="const",K=2, season=NULL)
+summary(rates.co)
+
+```
+
+### (c) Estimate the cointegration vectors. Use them to describe the equilibrium relationship between the five rates.
+
+Using the fitted coefficient values from Johansen's test above, I construct four cointegration vectors below. 
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=5,fig.width=7}
+
+coint1=-series$cofi-5.016228*series$X1ycmt+1.447589*series$X5ycmt+
+     1.798685*series$primeRate+1.274463*series$X3mTbill.2mkt
+coint2=-series$cofi+2.8868596*series$X1ycmt-0.9385606*series$X5ycmt+
+     0.2357253*series$primeRate-3.3546732*series$X3mTbill.2mkt
+coint3=-series$cofi+2.3696681*series$X1ycmt-1.3010429*series$X5ycmt+
+     0.9647242*series$primeRate-3.1195849*series$X3mTbill.2mkt
+coint4=-series$cofi+1.613084*series$X1ycmt-1.864387*series$X5ycmt-
+     3.533503*series$primeRate+2.575369*series$X3mTbill.2mkt
+
+```
+
+I then test these cointegration vectors to determine which can be used to describe long run equilibria between the rates. The Augmented Dickey-Fuller test results below indicate that the first three, and not the forth, are cointegration vectors resulting in weakly stationary series. 
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=5,fig.width=7}
+adf.test(series$cofi,alternative = "stationary")
+adf.test(coint1*series$cofi,alternative = "stationary")
+adf.test(coint2*series$cofi,alternative = "stationary")
+adf.test(coint3*series$cofi,alternative = "stationary")
+adf.test(coint4*series$cofi,alternative = "stationary")
+
+```
+
+### (d) Regress COFI on the four other rates. Discuss the economic meaning of this regression relationship. Spurious?
+
+Below, I regress COFI on the four rates. Note the high (0.96) adjusted R-squared. I then evaluate the fit using the sum of squared errors (residuals) and find a high 0.33 error rate. Like Granger and Newbold (1974), I find that conventional significance tests are biased towards acceptance when y and x are unit root non-stationary time series. 
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+rates=as.data.frame(rates)
+
+fit.lm=lm(rates$cofi~rates$X1ycmt+rates$X5ycmt+rates$primeRate+rates$X3mTbill.2mkt)
+summary(fit.lm)
+
+sqrt(sum(fit.lm$resid^2)/(nrow(rates)-2))
+
+```
+
+Interestingly, the standard adf.test() concludes the residuals to be stationary. However, when I graph the residuals, I can see a clear trend in the data. Further, the residuals are non-stationary with ACF showing gradual decay typical of a non-stationary series. Re-running adf.test() increasing the lags under consideration to 10 results in a failur to reject indicating residual nonstationarity. 
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+
+adf.test(fit.lm$resid,alternative="stationary")
+
+par(mfrow=c(1,2))
+plot(fit.lm$resid,type="l",ylab="residuals",main="residual plot")
+acf(fit.lm$resid,main="residual autocorrelation")
+
+adf.test(fit.lm$resid,alternative="stationary",k=10)
+
+```
+
+So, at this point I would conclude that, while 1. it is likely that the series have common underlying trends and 2. it is likely that the x's are predictive of y, nonstationarity in the y and x series are inflating the estimate of the fit and is an example of spurious regression. 
+
+Running the same linear regression on the differenced series substantially eliminates the problem. While adjusted R2 falls to 0.5 (output omitted for brevity), the sum of squared errors (residuals) falls to 0.07. The graphs and adf.test() show that, while diff'ing hasn't eliminated autocorrelation in the residuals, it has reduced it. 
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+
+fit.lm.diff=lm(diff(rates$cofi)~diff(rates$X1ycmt)+diff(rates$X5ycmt)+
+                    diff(rates$primeRate)+diff(rates$X3mTbill.2mkt))
+
+sqrt(sum(fit.lm.diff$resid^2)/(nrow(rates)-2))
+
+par(mfrow=c(1,2))
+plot(fit.lm.diff$resid,type="l",ylab="diff() residuals",main="diff() residual plot")
+acf(fit.lm.diff$resid,main="diff() residual autocorr")
+
+adf.test(fit.lm.diff$resid,alternative="stationary")
+
+```
+
+Finally, taking the diff(log()), I lower the sum of squared errors still further to 0.018. 
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='markup',warning=FALSE,fig.show='asis',fig.height=5,fig.width=7}
+
+fit.lm.diff.log=lm(diff(log(rates$cofi))~diff(log(rates$X1ycmt))+diff(log(rates$X5ycmt))+
+                    diff(log(rates$primeRate))+diff(log(rates$X3mTbill.2mkt)))
+
+sqrt(sum(fit.lm.diff.log$resid^2)/(nrow(rates)-2))
+
+```
+
